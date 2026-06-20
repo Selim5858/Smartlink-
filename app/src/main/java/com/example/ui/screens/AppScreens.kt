@@ -736,6 +736,14 @@ fun AdminCenterScreen(viewModel: MainViewModel) {
     var popupMessage by remember { mutableStateOf("") }
     var countdownStr by remember { mutableStateOf("5") }
 
+    val context = LocalContext.current
+    var apiUrlInput by remember { mutableStateOf(com.example.data.HostingerNetworkClient.getApiUrl(context)) }
+    var apiKeyInput by remember { mutableStateOf(com.example.data.HostingerNetworkClient.getApiKey(context)) }
+    var isCloudEnabledSelected by remember { mutableStateOf(com.example.data.HostingerNetworkClient.isCloudEnabled(context)) }
+
+    val isTestingConnection by viewModel.isTestingConnection.collectAsStateWithLifecycle()
+    var connectionTestResult by remember { mutableStateOf<Pair<Boolean?, String>>(Pair(null, "")) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -786,6 +794,151 @@ fun AdminCenterScreen(viewModel: MainViewModel) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("Kayıtlı Kullanıcılar", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
                             Text("$registerCount", fontSize = 24.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.tertiary)
+                        }
+                    }
+                }
+            }
+
+            // Hostinger API Settings card
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f))
+                ) {
+                    Column(modifier = Modifier.padding(20.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Bulut",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = "Hostinger Bulut Senkronizasyonu",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        
+                        Text(
+                            text = "Butonları Hostinger sunucunuzdan canlı yönetmek ve verileri eşitlemek için API ayarlarınızı yapılandırın.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+
+                        OutlinedTextField(
+                            value = apiUrlInput,
+                            onValueChange = { apiUrlInput = it },
+                            label = { Text("Hostinger API Linki (Örn: https://site.com/api.php)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("config_api_url")
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        OutlinedTextField(
+                            value = apiKeyInput,
+                            onValueChange = { apiKeyInput = it },
+                            label = { Text("API Güvenlik Şifresi") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth().testTag("config_api_key")
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { isCloudEnabledSelected = !isCloudEnabledSelected }
+                        ) {
+                            Switch(
+                                checked = isCloudEnabledSelected,
+                                onCheckedChange = { isCloudEnabledSelected = it },
+                                modifier = Modifier.testTag("config_cloud_switch")
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column {
+                                Text(
+                                    text = "Hostinger Bulut Modu Aktif",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (isCloudEnabledSelected) "Canlı MYSQL sunucusu aktif" else "Yerel cihaz içi hafıza aktif",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Connection test output indicator
+                        connectionTestResult.first?.let { success ->
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (success) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = if (success) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                        contentDescription = "Test Durumu",
+                                        tint = if (success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = connectionTestResult.second,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (success) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.testHostingerConnection(apiUrlInput, apiKeyInput) { success, msg ->
+                                        connectionTestResult = Pair(success, msg)
+                                    }
+                                },
+                                enabled = !isTestingConnection,
+                                modifier = Modifier.weight(1f).testTag("config_test_btn")
+                            ) {
+                                if (isTestingConnection) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Text("Bağlantıyı Test Et", fontSize = 11.sp)
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.saveHostingerConfig(apiUrlInput, apiKeyInput, isCloudEnabledSelected)
+                                },
+                                modifier = Modifier.weight(1f).testTag("config_save_btn")
+                            ) {
+                                Text("Ayarları Kaydet", fontSize = 11.sp)
+                            }
                         }
                     }
                 }

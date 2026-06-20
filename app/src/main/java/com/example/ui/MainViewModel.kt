@@ -1,9 +1,11 @@
 package com.example.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.AppRepository
+import com.example.data.HostingerNetworkClient
 import com.example.data.LinkButton
 import com.example.data.User
 import kotlinx.coroutines.Job
@@ -16,7 +18,10 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
 
-class MainViewModel(private val repository: AppRepository) : ViewModel() {
+class MainViewModel(
+    val context: Context,
+    private val repository: AppRepository
+) : ViewModel() {
 
     // App state
     enum class Screen {
@@ -28,12 +33,8 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
     private val _currentScreen = MutableStateFlow(Screen.MainDashboard)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
-    val buttons: StateFlow<List<LinkButton>> = repository.allLinkButtons
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
+    private val _buttons = MutableStateFlow<List<LinkButton>>(emptyList())
+    val buttons: StateFlow<List<LinkButton>> = _buttons.asStateFlow()
 
     val registeredUsersCount: StateFlow<Int> = repository.usersCount
         .stateIn(
@@ -67,7 +68,16 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
     private val _pendingRedirectUrl = MutableStateFlow<String?>(null)
     val pendingRedirectUrl: StateFlow<String?> = _pendingRedirectUrl.asStateFlow()
 
+    // Hostinger testing state
+    private val _isTestingConnection = MutableStateFlow(false)
+    val isTestingConnection = _isTestingConnection.asStateFlow()
+
     private var countdownJob: Job? = null
+    private var buttonsJob: Job? = null
+
+    init {
+        refreshButtons()
+    }
 
     fun navigateTo(screen: Screen) {
         _currentScreen.value = screen
@@ -79,6 +89,23 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
 
     fun clearRedirectUrl() {
         _pendingRedirectUrl.value = null
+    }
+
+    // --- CLOUD OR LOCAL REFRESH ---
+    fun refreshButtons() {
+        buttonsJob?.cancel()
+        if (HostingerNetworkClient.isCloudEnabled(context)) {
+            viewModelScope.launch {
+                val remoteList = HostingerNetworkClient.fetchButtons(context)
+                _buttons.value = remoteList
+            }
+        } else {
+            buttonsJob = viewModelScope.launch {
+                repository.allLinkButtons.collect { localList ->
+                    _buttons.value = localList
+                }
+            }
+        }
     }
 
     // --- BUTTON MANAGEMENT (ADMIN ACTIONS) ---
@@ -102,22 +129,49 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
                 popupMessage = popupMessage.trim(),
                 countdownSeconds = countdownSeconds.coerceIn(1, 60)
             )
-            repository.insertLinkButton(newBtn)
-            _userMessage.value = "Buton başarıyla eklendi!"
+
+            if (HostingerNetworkClient.isCloudEnabled(context)) {
+                val success = HostingerNetworkClient.addBtn(context, newBtn)
+                if (success) {
+                    _userMessage.value = "Buton başarıyla Hostinger bulutuna eklendi!"
+                    refreshButtons()
+                } else {
+                    _userMessage.value = "Hata: Hostinger sunucusuna eklenemedi!"
+                }
+            } else {
+                repository.insertLinkButton(newBtn)
+                _userMessage.value = "Buton başarıyla yerel havuza eklendi!"
+            }
         }
     }
 
     fun updateButton(button: LinkButton) {
         viewModelScope.launch {
-            repository.updateLinkButton(button)
-            _userMessage.value = "Buton güncellemesi başarılı!"
+            if (HostingerNetworkClient.isCloudEnabled(context)) {
+                // For simplicity, update on remote works by re-adding with id if api supported it,
+                // or they can delete and recreate.
+                _userMessage.value = "Bulut modunda güncelleme için silip tekrar ekleyin."
+            } else {
+                repository.updateLinkButton(button)
+                _userMessage.value = "Buton güncellemesi başarılı!"
+            }
         }
     }
 
     fun deleteButton(id: Int) {
         viewModelScope.launch {
-            repository.deleteLinkButtonById(id)
-            _userMessage.value = "Buton başarıyla silindi!"
+            if (HostingerNetworkClient.isCloudEnabled(context)) {
+                val success = HostingerNetworkClient.deleteBtn(context, id)
+                if (success) {
+                    _userMessage.value = "Buton Hostinger bulutundan silindi!"
+                    refreshButtons()
+                } else {
+                    _userMessage.value = "Hata: Sunucudan silinemedi!"
+                }
+            } else {
+                repository.deleteLinkButtonById(id)
+                _userMessage.value = "Buton başarıyla silindi!"
+            }
         }
     }
 
@@ -130,7 +184,14 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
 
         // Increment click score
         viewModelScope.launch {
-            repository.insertLinkButton(button.copy(clickCount = button.clickCount + 1))
+            if (HostingerNetworkClient.isCloudEnabled(context)) {
+                HostingerNetworkClient.registerClick(context, button.id)
+                _buttons.value = _buttons.value.map {
+                    if (it.id == button.id) it.copy(clickCount = it.clickCount + 1) else it
+                }
+            } else {
+                repository.insertLinkButton(button.copy(clickCount = button.clickCount + 1))
+            }
         }
 
         countdownJob?.cancel()
@@ -141,6 +202,32 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
             }
             _isAdSkippable.value = true
         }
+    }
+
+    // --- HOSTINGER SETTINGS API ---
+    fun testHostingerConnection(url: String, apiKey: String, onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            _isTestingConnection.value = true
+            val previousUrl = HostingerNetworkClient.getApiUrl(context)
+            val previousKey = HostingerNetworkClient.getApiKey(context)
+            val previousCloud = HostingerNetworkClient.isCloudEnabled(context)
+
+            HostingerNetworkClient.saveApiConfig(context, url, apiKey, true)
+            val result = HostingerNetworkClient.testConnection(context)
+
+            if (!result.first) {
+                // Restore old config if connection failed
+                HostingerNetworkClient.saveApiConfig(context, previousUrl, previousKey, previousCloud)
+            }
+            onComplete(result.first, result.second)
+            _isTestingConnection.value = false
+        }
+    }
+
+    fun saveHostingerConfig(url: String, apiKey: String, useCloud: Boolean) {
+        HostingerNetworkClient.saveApiConfig(context, url, apiKey, useCloud)
+        _userMessage.value = "Hostinger ayarları başarıyla kaydedildi!"
+        refreshButtons()
     }
 
     fun closeAdPopup(proceedToTarget: Boolean) {
@@ -233,11 +320,14 @@ class MainViewModel(private val repository: AppRepository) : ViewModel() {
     }
 }
 
-class MainViewModelFactory(private val repository: AppRepository) : ViewModelProvider.Factory {
+class MainViewModelFactory(
+    private val context: Context,
+    private val repository: AppRepository
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(MainViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return MainViewModel(repository) as T
+            return MainViewModel(context, repository) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
         
         // Initialize our central state coordinator ViewModel
         val mainViewModel: MainViewModel = viewModel(
-          factory = MainViewModelFactory(repository)
+          factory = MainViewModelFactory(context.applicationContext, repository)
         )
 
         Surface(
