@@ -1,0 +1,6 @@
+{
+  "name": "LinkGecis",
+  "description": "Popup reklamı geçip hedef linke güvenli bir şekilde ulaştıran özel buton geçiş sistemi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
